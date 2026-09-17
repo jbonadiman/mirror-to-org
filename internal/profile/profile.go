@@ -53,7 +53,7 @@ type GitlabProfile struct {
 	AvatarURL   string `json:"avatar_url"`
 }
 
-func blankToNone(value string) string {
+func collapseSpace(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
@@ -72,7 +72,7 @@ func NormalizeWebsite(value string) string {
 }
 
 func dropNoreply(email string) string {
-	email = blankToNone(email)
+	email = collapseSpace(email)
 	if isNoreply(email) {
 		return ""
 	}
@@ -82,30 +82,30 @@ func dropNoreply(email string) string {
 // MapGithubProfile: orgs are served from /users too, but use
 // Description where users use Bio.
 func MapGithubProfile(data GithubUser) Profile {
-	description := blankToNone(data.Bio)
+	description := collapseSpace(data.Bio)
 	if description == "" {
-		description = blankToNone(data.Description)
+		description = collapseSpace(data.Description)
 	}
 	return Profile{
 		Account:     data.Login,
-		FullName:    blankToNone(data.Name),
+		FullName:    collapseSpace(data.Name),
 		Email:       dropNoreply(data.Email),
-		Website:     NormalizeWebsite(blankToNone(data.Blog)),
+		Website:     NormalizeWebsite(collapseSpace(data.Blog)),
 		Description: description,
-		Location:    blankToNone(data.Location),
-		AvatarURL:   blankToNone(data.AvatarURL),
+		Location:    collapseSpace(data.Location),
+		AvatarURL:   collapseSpace(data.AvatarURL),
 	}
 }
 
 func MapGiteaProfile(data GiteaUser) Profile {
 	return Profile{
 		Account:     data.Login,
-		FullName:    blankToNone(data.FullName),
+		FullName:    collapseSpace(data.FullName),
 		Email:       dropNoreply(data.Email),
-		Website:     NormalizeWebsite(blankToNone(data.Website)),
-		Description: blankToNone(data.Description),
-		Location:    blankToNone(data.Location),
-		AvatarURL:   blankToNone(data.AvatarURL),
+		Website:     NormalizeWebsite(collapseSpace(data.Website)),
+		Description: collapseSpace(data.Description),
+		Location:    collapseSpace(data.Location),
+		AvatarURL:   collapseSpace(data.AvatarURL),
 	}
 }
 
@@ -115,18 +115,18 @@ func MapGitlabProfile(data GitlabProfile) Profile {
 	if account == "" {
 		account = data.Path
 	}
-	description := blankToNone(data.Bio)
+	description := collapseSpace(data.Bio)
 	if description == "" {
-		description = blankToNone(data.Description)
+		description = collapseSpace(data.Description)
 	}
 	return Profile{
 		Account:     account,
-		FullName:    blankToNone(data.Name),
+		FullName:    collapseSpace(data.Name),
 		Email:       dropNoreply(data.PublicEmail),
-		Website:     NormalizeWebsite(blankToNone(data.WebsiteURL)),
+		Website:     NormalizeWebsite(collapseSpace(data.WebsiteURL)),
 		Description: description,
-		Location:    blankToNone(data.Location),
-		AvatarURL:   blankToNone(data.AvatarURL),
+		Location:    collapseSpace(data.Location),
+		AvatarURL:   collapseSpace(data.AvatarURL),
 	}
 }
 

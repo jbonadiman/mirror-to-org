@@ -8,8 +8,6 @@ import (
 
 const defaultVisibility = "limited"
 
-var gitlabHosts = map[string]bool{"gitlab.com": true, "www.gitlab.com": true}
-
 type OrgCreatePayload struct {
 	Username    string `json:"username"`
 	Visibility  string `json:"visibility"`
@@ -35,7 +33,7 @@ func ServiceForHost(host string) string {
 	if host == profile.GithubHost {
 		return "github"
 	}
-	if gitlabHosts[host] {
+	if profile.GitlabHosts[host] {
 		return "gitlab"
 	}
 	return "git"
