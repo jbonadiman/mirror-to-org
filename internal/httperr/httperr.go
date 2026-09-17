@@ -1,9 +1,13 @@
 package httperr
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// maxDetailBytes caps how much of a response body goes into an error.
+const maxDetailBytes = 500
 
 // CredentialError aborts the whole run, not just one reference.
 type CredentialError struct {
@@ -17,8 +21,8 @@ func CheckStatus(statusCode int, body []byte, action string, isTarget bool) erro
 		return nil
 	}
 	detail := strings.TrimSpace(string(body))
-	if len(detail) > 500 {
-		detail = detail[:500]
+	if len(detail) > maxDetailBytes {
+		detail = detail[:maxDetailBytes]
 	}
 	if detail == "" {
 		detail = "no detail"
@@ -27,5 +31,5 @@ func CheckStatus(statusCode int, body []byte, action string, isTarget bool) erro
 	if isTarget && (statusCode == 401 || statusCode == 403) {
 		return &CredentialError{Message: message}
 	}
-	return fmt.Errorf("%s", message)
+	return errors.New(message)
 }
