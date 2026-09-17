@@ -51,11 +51,15 @@ func clients(t *testing.T, routes map[string]*http.Response) (*http.Client, *htt
 	return &http.Client{Transport: roundTripFunc(targetHandler)}, &http.Client{Transport: roundTripFunc(sourceHandler)}, sent
 }
 
+func newMirrorer(client, source *http.Client, stdout io.Writer) *mirrorer {
+	return &mirrorer{client: client, source: source, target: testTarget, stdout: stdout, owners: map[string]string{}}
+}
+
 func TestMirrorOne(t *testing.T) {
 	t.Run("unused name creates the org and mirrors", func(t *testing.T) {
 		client, source, sent := clients(t, nil)
 		var buf bytes.Buffer
-		status, name, created, err := mirrorOne(&buf, client, source, testTarget, "github.com/kepano/minimal", map[string]string{})
+		status, name, created, err := newMirrorer(client, source, &buf).mirror("github.com/kepano/minimal")
 		if err != nil || status != "ok" || name != "kepano/minimal" || !created {
 			t.Fatalf("got %q %q %v %v", status, name, created, err)
 		}
@@ -67,7 +71,7 @@ func TestMirrorOne(t *testing.T) {
 	t.Run("existing org is left untouched", func(t *testing.T) {
 		client, source, sent := clients(t, map[string]*http.Response{"GET /api/v1/orgs/kepano": jsonResponse(200, `{"name":"kepano"}`)})
 		var buf bytes.Buffer
-		status, name, created, err := mirrorOne(&buf, client, source, testTarget, "github.com/kepano/minimal", map[string]string{})
+		status, name, created, err := newMirrorer(client, source, &buf).mirror("github.com/kepano/minimal")
 		if err != nil || status != "ok" || name != "kepano/minimal" || created {
 			t.Fatalf("got %q %q %v %v", status, name, created, err)
 		}
@@ -79,7 +83,7 @@ func TestMirrorOne(t *testing.T) {
 	t.Run("name taken by user writes nothing", func(t *testing.T) {
 		client, source, sent := clients(t, map[string]*http.Response{"GET /api/v1/users/kepano": jsonResponse(200, `{"login":"kepano"}`)})
 		var buf bytes.Buffer
-		status, _, _, err := mirrorOne(&buf, client, source, testTarget, "github.com/kepano/minimal", map[string]string{})
+		status, _, _, err := newMirrorer(client, source, &buf).mirror("github.com/kepano/minimal")
 		if err != nil || status != "skip" {
 			t.Fatalf("got %q, %v", status, err)
 		}
@@ -96,7 +100,7 @@ func TestMirrorOne(t *testing.T) {
 			"GET /api/v1/repos/kepano/minimal": jsonResponse(200, "{}"),
 		})
 		var buf bytes.Buffer
-		status, detail, _, err := mirrorOne(&buf, client, source, testTarget, "github.com/kepano/minimal", map[string]string{})
+		status, detail, _, err := newMirrorer(client, source, &buf).mirror("github.com/kepano/minimal")
 		if err != nil || status != "skip" || !strings.Contains(detail, "already mirrored") {
 			t.Fatalf("got %q %q %v", status, detail, err)
 		}
@@ -107,10 +111,10 @@ func TestMirrorOne(t *testing.T) {
 
 	t.Run("one owner is probed once across a batch", func(t *testing.T) {
 		client, source, sent := clients(t, nil)
-		resolved := map[string]string{}
 		var buf bytes.Buffer
+		m := newMirrorer(client, source, &buf)
 		for _, repo := range []string{"a", "b", "c"} {
-			mirrorOne(&buf, client, source, testTarget, "github.com/kepano/"+repo, resolved)
+			m.mirror("github.com/kepano/" + repo)
 		}
 		if countMatches(*sent, "GET /api/v1/orgs/kepano") != 1 {
 			t.Fatalf("expected one org probe, got %v", *sent)
@@ -129,7 +133,7 @@ func TestMirrorOne(t *testing.T) {
 			return jsonResponse(200, `{"login":"someone-else"}`), nil
 		})}
 		var buf bytes.Buffer
-		_, _, _, err := mirrorOne(&buf, client, source, testTarget, "github.com/kepano/minimal", map[string]string{})
+		_, _, _, err := newMirrorer(client, source, &buf).mirror("github.com/kepano/minimal")
 		if err == nil || !strings.Contains(err.Error(), "different namespace") {
 			t.Fatalf("got %v", err)
 		}
@@ -142,7 +146,7 @@ func TestMirrorOne(t *testing.T) {
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return jsonResponse(404, ""), nil })}
 		source := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return jsonResponse(404, ""), nil })}
 		var buf bytes.Buffer
-		_, _, _, err := mirrorOne(&buf, client, source, testTarget, "github.com/ghost/nope", map[string]string{})
+		_, _, _, err := newMirrorer(client, source, &buf).mirror("github.com/ghost/nope")
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -162,7 +166,7 @@ func TestMirrorOne(t *testing.T) {
 		})}
 		client.Transport = &authInjectingTransport{token: "SECRET", base: client.Transport}
 		var buf bytes.Buffer
-		mirrorOne(&buf, client, source, testTarget, "github.com/kepano/minimal", map[string]string{})
+		newMirrorer(client, source, &buf).mirror("github.com/kepano/minimal")
 		if seenAuth != "" {
 			t.Fatalf("expected no Authorization header at the source, got %q", seenAuth)
 		}
