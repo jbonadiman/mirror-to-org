@@ -170,6 +170,20 @@ func TestUploadAvatar(t *testing.T) {
 		}
 	})
 
+	t.Run("ip literal avatar host is refused", func(t *testing.T) {
+		fetched := false
+		source := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			fetched = true
+			return nil, errors.New("unreachable")
+		})}
+		if err := UploadAvatar(&http.Client{}, source, testTarget, "kepano", "https://127.0.0.1/a.png"); err == nil {
+			t.Fatal("expected an error")
+		}
+		if fetched {
+			t.Fatal("avatar URL was fetched despite an IP literal host")
+		}
+	})
+
 	t.Run("downloads and base64-encodes the avatar", func(t *testing.T) {
 		var seenImage string
 		source := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

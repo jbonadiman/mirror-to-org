@@ -10,7 +10,10 @@ var (
 	accountRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$`)
 	hostRE    = regexp.MustCompile(`^[a-z0-9.-]+(:\d+)?$`)
 	repoRE    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
-	ipv4RE    = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
+	// Matches an IPv4 literal in every form inet_aton accepts: dotted
+	// quad, short forms like 127.1, and octal/hex octets. A hostname's
+	// last label is alphabetic, so this never matches one.
+	ipLiteralRE = regexp.MustCompile(`^(0[xX][0-9a-fA-F]+|[0-9]+)(\.(0[xX][0-9a-fA-F]+|[0-9]+))*\.?$`)
 )
 
 var reservedRepoNames = map[string]bool{".": true, "..": true, "-": true}
@@ -50,7 +53,7 @@ func ValidateHost(host string) error {
 		return fmt.Errorf("%q is not a valid host", host)
 	}
 	hostPart := strings.SplitN(host, ":", 2)[0]
-	if ipv4RE.MatchString(hostPart) {
+	if ipLiteralRE.MatchString(hostPart) {
 		return fmt.Errorf("refusing IP literal host: %s", host)
 	}
 	return nil

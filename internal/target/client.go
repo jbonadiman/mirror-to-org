@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/jbonadiman/mirror-to-org/internal/httperr"
+	"github.com/jbonadiman/mirror-to-org/internal/reference"
 )
 
 // Migration clones the repo before responding, unlike the web UI which queues it.
@@ -145,8 +147,12 @@ func MigrateRepo(client *http.Client, targetURL string, body MigrationPayload) (
 }
 
 func UploadAvatar(client, source *http.Client, targetURL, name, avatarURL string) error {
-	if !strings.HasPrefix(avatarURL, "https://") {
+	u, err := url.Parse(avatarURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return fmt.Errorf("refusing non-https avatar URL: %s", avatarURL)
+	}
+	if err := reference.ValidateHost(strings.ToLower(u.Host)); err != nil {
+		return fmt.Errorf("refusing avatar URL host: %w", err)
 	}
 
 	image, status, err := doRequest(source, http.MethodGet, avatarURL, nil, map[string]string{"User-Agent": "mirror-to-org"})
