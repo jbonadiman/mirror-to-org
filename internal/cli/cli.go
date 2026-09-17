@@ -27,25 +27,41 @@ Options:
   --target URL  Target instance base URL (or set $GITEA_TARGET)
 `
 
-func resolveOwner(stdout io.Writer, client, source *http.Client, targetURL, host, owner string, resolved map[string]string) (string, bool, error) {
-	if v, ok := resolved[owner]; ok {
+const (
+	verdictOK   = "ok"
+	verdictSkip = "skip"
+)
+
+// mirrorer runs references against one target. It keeps the clients, the
+// target URL and the per-run owner cache together, so the steps below do
+// not thread them through every call.
+type mirrorer struct {
+	client *http.Client
+	source *http.Client
+	target string
+	stdout io.Writer
+	owners map[string]string
+}
+
+func (m *mirrorer) resolveOwner(host, owner string) (verdict string, created bool, err error) {
+	if v, ok := m.owners[owner]; ok {
 		return v, false, nil
 	}
 
-	action, err := target.Probe(client, targetURL, owner)
+	action, err := target.Probe(m.client, m.target, owner)
 	if err != nil {
 		return "", false, err
 	}
 	if action != "create" {
-		verdict := "ok"
+		verdict := verdictOK
 		if action == "skip" {
-			verdict = "skip"
+			verdict = verdictSkip
 		}
-		resolved[owner] = verdict
+		m.owners[owner] = verdict
 		return verdict, false, nil
 	}
 
-	raw, err := profile.Fetch(source, host, owner)
+	raw, err := profile.Fetch(m.source, host, owner)
 	if err != nil {
 		return "", false, err
 	}
@@ -61,59 +77,59 @@ func resolveOwner(stdout io.Writer, client, source *http.Client, targetURL, host
 			prof.Account, owner)
 	}
 
-	if err := target.CreateOrg(client, targetURL, target.BuildCreatePayload(prof, profile.SourceURL(host, owner))); err != nil {
+	if err := target.CreateOrg(m.client, m.target, target.BuildCreatePayload(prof, profile.SourceURL(host, owner))); err != nil {
 		return "", false, err
 	}
-	fmt.Fprintf(stdout, "  Created org '%s'\n", owner)
+	fmt.Fprintf(m.stdout, "  Created org '%s'\n", owner)
 
 	if prof.AvatarURL == "" {
-		fmt.Fprintln(stdout, "  WARNING: source exposes no avatar")
-	} else if err := target.UploadAvatar(client, source, targetURL, owner, prof.AvatarURL); err != nil {
+		fmt.Fprintln(m.stdout, "  WARNING: source exposes no avatar")
+	} else if err := target.UploadAvatar(m.client, m.source, m.target, owner, prof.AvatarURL); err != nil {
 		// Avatar is cosmetic; don't fail the reference over it.
 		var credErr *httperr.CredentialError
 		if errors.As(err, &credErr) {
 			return "", false, err
 		}
-		fmt.Fprintf(stdout, "  WARNING: avatar upload failed: %v\n", err)
+		fmt.Fprintf(m.stdout, "  WARNING: avatar upload failed: %v\n", err)
 	}
 
-	resolved[owner] = "ok"
-	return "ok", true, nil
+	m.owners[owner] = verdictOK
+	return verdictOK, true, nil
 }
 
-func mirrorOne(stdout io.Writer, client, source *http.Client, targetURL, ref string, resolved map[string]string) (status, detail string, orgCreated bool, err error) {
+func (m *mirrorer) mirror(ref string) (status, detail string, orgCreated bool, err error) {
 	host, owner, repo, err := reference.Parse(ref)
 	if err != nil {
 		return "", "", false, err
 	}
 
-	verdict, orgCreated, err := resolveOwner(stdout, client, source, targetURL, host, owner, resolved)
+	verdict, orgCreated, err := m.resolveOwner(host, owner)
 	if err != nil {
 		return "", "", orgCreated, err
 	}
-	if verdict == "skip" {
-		return "skip", fmt.Sprintf("'%s' is already a user account on the target", owner), orgCreated, nil
+	if verdict == verdictSkip {
+		return verdictSkip, fmt.Sprintf("'%s' is already a user account on the target", owner), orgCreated, nil
 	}
 
 	name := owner + "/" + repo
-	exists, err := target.RepoExists(client, targetURL, owner, repo)
+	exists, err := target.RepoExists(m.client, m.target, owner, repo)
 	if err != nil {
 		return "", "", orgCreated, err
 	}
 	if exists {
-		return "skip", fmt.Sprintf("'%s' is already mirrored", name), orgCreated, nil
+		return verdictSkip, fmt.Sprintf("'%s' is already mirrored", name), orgCreated, nil
 	}
 
-	migStatus, err := target.MigrateRepo(client, targetURL, target.BuildMigrationPayload(host, owner, repo))
+	migStatus, err := target.MigrateRepo(m.client, m.target, target.BuildMigrationPayload(host, owner, repo))
 	if err != nil {
 		return "", "", orgCreated, err
 	}
 	if migStatus == "skip" {
-		return "skip", fmt.Sprintf("'%s' is already mirrored", name), orgCreated, nil
+		return verdictSkip, fmt.Sprintf("'%s' is already mirrored", name), orgCreated, nil
 	}
 
-	fmt.Fprintf(stdout, "  Mirrored '%s'\n", name)
-	return "ok", name, orgCreated, nil
+	fmt.Fprintf(m.stdout, "  Mirrored '%s'\n", name)
+	return verdictOK, name, orgCreated, nil
 }
 
 func parseArgs(args []string) (targetURL string, references []string, err error) {
@@ -136,13 +152,6 @@ func parseArgs(args []string) (targetURL string, references []string, err error)
 		targetURL = os.Getenv("GITEA_TARGET")
 	}
 	return targetURL, references, nil
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // Run returns the process exit code: 0 success, 1 runtime/credential
@@ -190,12 +199,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	client.Timeout = 30 * time.Second
 	source := &http.Client{Timeout: 30 * time.Second}
 
-	var mirrored, skipped, failed, orgs int
-	resolved := map[string]string{}
+	m := &mirrorer{
+		client: client,
+		source: source,
+		target: targetURL,
+		stdout: stdout,
+		owners: map[string]string{},
+	}
 
+	var mirrored, skipped, failed, orgs int
 	for _, ref := range references {
 		fmt.Fprintf(stdout, "\n--- %s ---\n", ref)
-		status, detail, created, err := mirrorOne(stdout, client, source, targetURL, ref, resolved)
+		status, detail, created, err := m.mirror(ref)
 		if err != nil {
 			var credErr *httperr.CredentialError
 			if errors.As(err, &credErr) {
@@ -208,8 +223,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 
-		orgs += boolToInt(created)
-		if status == "ok" {
+		if created {
+			orgs++
+		}
+		if status == verdictOK {
 			mirrored++
 		} else {
 			fmt.Fprintf(stdout, "  WARNING: skipped — %s\n", detail)
