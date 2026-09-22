@@ -79,6 +79,18 @@ func dropNoreply(email string) string {
 	return email
 }
 
+// normalize applies the cleaning every forge's raw profile needs, so the
+// mappers below stay plain field renames.
+func normalize(p Profile) Profile {
+	p.FullName = collapseSpace(p.FullName)
+	p.Email = dropNoreply(p.Email)
+	p.Website = NormalizeWebsite(collapseSpace(p.Website))
+	p.Description = collapseSpace(p.Description)
+	p.Location = collapseSpace(p.Location)
+	p.AvatarURL = collapseSpace(p.AvatarURL)
+	return p
+}
+
 // MapGithubProfile: orgs are served from /users too, but use
 // Description where users use Bio.
 func MapGithubProfile(data GithubUser) Profile {
@@ -86,27 +98,27 @@ func MapGithubProfile(data GithubUser) Profile {
 	if description == "" {
 		description = collapseSpace(data.Description)
 	}
-	return Profile{
+	return normalize(Profile{
 		Account:     data.Login,
-		FullName:    collapseSpace(data.Name),
-		Email:       dropNoreply(data.Email),
-		Website:     NormalizeWebsite(collapseSpace(data.Blog)),
+		FullName:    data.Name,
+		Email:       data.Email,
+		Website:     data.Blog,
 		Description: description,
-		Location:    collapseSpace(data.Location),
-		AvatarURL:   collapseSpace(data.AvatarURL),
-	}
+		Location:    data.Location,
+		AvatarURL:   data.AvatarURL,
+	})
 }
 
 func MapGiteaProfile(data GiteaUser) Profile {
-	return Profile{
+	return normalize(Profile{
 		Account:     data.Login,
-		FullName:    collapseSpace(data.FullName),
-		Email:       dropNoreply(data.Email),
-		Website:     NormalizeWebsite(collapseSpace(data.Website)),
-		Description: collapseSpace(data.Description),
-		Location:    collapseSpace(data.Location),
-		AvatarURL:   collapseSpace(data.AvatarURL),
-	}
+		FullName:    data.FullName,
+		Email:       data.Email,
+		Website:     data.Website,
+		Description: data.Description,
+		Location:    data.Location,
+		AvatarURL:   data.AvatarURL,
+	})
 }
 
 // MapGitlabProfile: a user has Username/Bio, a group has Path/Description.
@@ -119,15 +131,15 @@ func MapGitlabProfile(data GitlabProfile) Profile {
 	if description == "" {
 		description = collapseSpace(data.Description)
 	}
-	return Profile{
+	return normalize(Profile{
 		Account:     account,
-		FullName:    collapseSpace(data.Name),
-		Email:       dropNoreply(data.PublicEmail),
-		Website:     NormalizeWebsite(collapseSpace(data.WebsiteURL)),
+		FullName:    data.Name,
+		Email:       data.PublicEmail,
+		Website:     data.WebsiteURL,
 		Description: description,
-		Location:    collapseSpace(data.Location),
-		AvatarURL:   collapseSpace(data.AvatarURL),
-	}
+		Location:    data.Location,
+		AvatarURL:   data.AvatarURL,
+	})
 }
 
 func MapProfile(host string, raw []byte) (Profile, error) {
