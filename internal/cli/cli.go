@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jbonadiman/mirror-to-org/internal/httperr"
@@ -32,6 +34,25 @@ const (
 	verdictSkip = "skip"
 )
 
+// maxParallel caps how many references are mirrored at once. A migration is
+// cloned server-side, so overlapping a few references hides that latency
+// without hammering the target.
+// ponytail: fixed fan-out; make it a flag if large batches need more.
+const maxParallel = 4
+
+// ownerCache memoizes the target probe (and any org creation) per owner, so
+// a batch touches each owner once. The lock is held across resolution, which
+// serializes different owners' probes; the migrations, the slow part, still
+// overlap.
+// ponytail: one lock for every owner; split per owner if profile fetching
+// ever outgrows the migrations it overlaps.
+type ownerCache struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func newOwnerCache() *ownerCache { return &ownerCache{m: map[string]string{}} }
+
 // mirrorer runs references against one target. It keeps the clients, the
 // target URL and the per-run owner cache together, so the steps below do
 // not thread them through every call.
@@ -40,11 +61,14 @@ type mirrorer struct {
 	source *http.Client
 	target string
 	stdout io.Writer
-	owners map[string]string
+	owners *ownerCache
 }
 
 func (m *mirrorer) resolveOwner(host, owner string) (verdict string, created bool, err error) {
-	if v, ok := m.owners[owner]; ok {
+	m.owners.mu.Lock()
+	defer m.owners.mu.Unlock()
+
+	if v, ok := m.owners.m[owner]; ok {
 		return v, false, nil
 	}
 
@@ -57,7 +81,7 @@ func (m *mirrorer) resolveOwner(host, owner string) (verdict string, created boo
 		if action == "skip" {
 			verdict = verdictSkip
 		}
-		m.owners[owner] = verdict
+		m.owners.m[owner] = verdict
 		return verdict, false, nil
 	}
 
@@ -93,7 +117,7 @@ func (m *mirrorer) resolveOwner(host, owner string) (verdict string, created boo
 		fmt.Fprintf(m.stdout, "  WARNING: avatar upload failed: %v\n", err)
 	}
 
-	m.owners[owner] = verdictOK
+	m.owners.m[owner] = verdictOK
 	return verdictOK, true, nil
 }
 
@@ -154,6 +178,72 @@ func parseArgs(args []string) (targetURL string, references []string, err error)
 	return targetURL, references, nil
 }
 
+// mirrorResult holds one reference's buffered output and outcome, so the
+// caller can print every reference in the order it was given.
+type mirrorResult struct {
+	out        bytes.Buffer
+	status     string
+	detail     string
+	orgCreated bool
+	err        error
+}
+
+// mirrorAll mirrors every reference, running up to maxParallel at once, and
+// prints each reference's output in the order the references were given. It
+// returns the process exit code.
+func mirrorAll(base *mirrorer, stdout, stderr io.Writer, references []string) int {
+	results := make([]chan mirrorResult, len(references))
+	sem := make(chan struct{}, maxParallel)
+	for i, ref := range references {
+		results[i] = make(chan mirrorResult, 1)
+		go func(i int, ref string) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			var out bytes.Buffer
+			m := *base
+			m.stdout = &out
+			status, detail, created, err := m.mirror(ref)
+			results[i] <- mirrorResult{out: out, status: status, detail: detail, orgCreated: created, err: err}
+		}(i, ref)
+	}
+
+	var mirrored, skipped, failed, orgs int
+	for i, ref := range references {
+		r := <-results[i]
+		fmt.Fprintf(stdout, "\n--- %s ---\n", ref)
+		stdout.Write(r.out.Bytes())
+		if r.err != nil {
+			var credErr *httperr.CredentialError
+			if errors.As(r.err, &credErr) {
+				fmt.Fprintf(stderr, "  ERROR: %v\n", r.err)
+				fmt.Fprintln(stderr, "Aborting: the target rejected the token.")
+				return 1
+			}
+			fmt.Fprintf(stdout, "  ERROR: %v\n", r.err)
+			failed++
+			continue
+		}
+
+		if r.orgCreated {
+			orgs++
+		}
+		if r.status == verdictOK {
+			mirrored++
+		} else {
+			fmt.Fprintf(stdout, "  WARNING: skipped — %s\n", r.detail)
+			skipped++
+		}
+	}
+
+	fmt.Fprintf(stdout, "\nDone. Processed %d: %d mirrored, %d skipped, %d failed. %d org(s) created.\n",
+		len(references), mirrored, skipped, failed, orgs)
+
+	if failed > 0 {
+		return 1
+	}
+	return 0
+}
+
 // Run returns the process exit code: 0 success, 1 runtime/credential
 // failure, 2 usage error.
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -204,41 +294,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		source: source,
 		target: targetURL,
 		stdout: stdout,
-		owners: map[string]string{},
+		owners: newOwnerCache(),
 	}
 
-	var mirrored, skipped, failed, orgs int
-	for _, ref := range references {
-		fmt.Fprintf(stdout, "\n--- %s ---\n", ref)
-		status, detail, created, err := m.mirror(ref)
-		if err != nil {
-			var credErr *httperr.CredentialError
-			if errors.As(err, &credErr) {
-				fmt.Fprintf(stderr, "  ERROR: %v\n", err)
-				fmt.Fprintln(stderr, "Aborting: the target rejected the token.")
-				return 1
-			}
-			fmt.Fprintf(stdout, "  ERROR: %v\n", err)
-			failed++
-			continue
-		}
-
-		if created {
-			orgs++
-		}
-		if status == verdictOK {
-			mirrored++
-		} else {
-			fmt.Fprintf(stdout, "  WARNING: skipped — %s\n", detail)
-			skipped++
-		}
-	}
-
-	fmt.Fprintf(stdout, "\nDone. Processed %d: %d mirrored, %d skipped, %d failed. %d org(s) created.\n",
-		len(references), mirrored, skipped, failed, orgs)
-
-	if failed > 0 {
-		return 1
-	}
-	return 0
+	return mirrorAll(m, stdout, stderr, references)
 }

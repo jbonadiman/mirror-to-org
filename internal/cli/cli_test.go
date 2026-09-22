@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -52,7 +54,7 @@ func clients(t *testing.T, routes map[string]*http.Response) (*http.Client, *htt
 }
 
 func newMirrorer(client, source *http.Client, stdout io.Writer) *mirrorer {
-	return &mirrorer{client: client, source: source, target: testTarget, stdout: stdout, owners: map[string]string{}}
+	return &mirrorer{client: client, source: source, target: testTarget, stdout: stdout, owners: newOwnerCache()}
 }
 
 func TestMirrorOne(t *testing.T) {
@@ -171,6 +173,70 @@ func TestMirrorOne(t *testing.T) {
 			t.Fatalf("expected no Authorization header at the source, got %q", seenAuth)
 		}
 	})
+}
+
+func TestMirrorAllOverlapsMigrations(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, peak, orgCreates := 0, 0, 0
+
+	targetClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/orgs" {
+			mu.Lock()
+			orgCreates++
+			mu.Unlock()
+			return jsonResponse(200, "{}"), nil
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/migrate" {
+			mu.Lock()
+			inFlight++
+			if inFlight > peak {
+				peak = inFlight
+			}
+			mu.Unlock()
+			time.Sleep(50 * time.Millisecond)
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			return jsonResponse(201, "{}"), nil
+		}
+		if r.Method == http.MethodPost {
+			return jsonResponse(200, "{}"), nil
+		}
+		return jsonResponse(404, ""), nil
+	})}
+	sourceClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(200, `{"login":"kepano"}`), nil
+	})}
+
+	refs := []string{"github.com/kepano/a", "github.com/kepano/b", "github.com/kepano/c", "github.com/kepano/d"}
+	var stdout, stderr bytes.Buffer
+	if code := mirrorAll(newMirrorer(targetClient, sourceClient, nil), &stdout, &stderr, refs); code != 0 {
+		t.Fatalf("got exit %d, stderr %q", code, stderr.String())
+	}
+
+	mu.Lock()
+	got := peak
+	creates := orgCreates
+	mu.Unlock()
+	if got < 2 {
+		t.Fatalf("expected migrations to overlap, peak concurrency was %d", got)
+	}
+	if creates != 1 {
+		t.Fatalf("expected one org creation for four refs, got %d", creates)
+	}
+
+	out := stdout.String()
+	for i, ref := range refs {
+		if !strings.Contains(out, "--- "+ref+" ---") {
+			t.Fatalf("missing section for %s in %q", ref, out)
+		}
+		if i > 0 && strings.Index(out, "--- "+refs[i-1]+" ---") > strings.Index(out, "--- "+ref+" ---") {
+			t.Fatalf("sections out of order in %q", out)
+		}
+	}
+	if !strings.Contains(out, "4 mirrored") {
+		t.Fatalf("expected four mirrored, got %q", out)
+	}
 }
 
 // authInjectingTransport stands in for target.NewClient's real transport
