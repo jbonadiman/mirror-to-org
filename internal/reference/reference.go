@@ -61,23 +61,13 @@ func ValidateHost(host string) error {
 
 func Parse(ref string) (host, owner, repo string, err error) {
 	cleaned := strings.TrimSpace(ref)
-	for _, scheme := range []string{"https://", "http://"} {
-		if strings.HasPrefix(cleaned, scheme) {
-			cleaned = cleaned[len(scheme):]
-			break
-		}
-	}
+	cleaned = strings.TrimPrefix(cleaned, "https://")
+	cleaned = strings.TrimPrefix(cleaned, "http://")
 	if idx := strings.IndexAny(cleaned, "?#"); idx != -1 {
 		cleaned = cleaned[:idx]
 	}
-	cleaned = strings.TrimSuffix(cleaned, "/")
 
-	var parts []string
-	for _, p := range strings.Split(cleaned, "/") {
-		if p != "" {
-			parts = append(parts, p)
-		}
-	}
+	parts := strings.FieldsFunc(cleaned, func(r rune) bool { return r == '/' })
 	if len(parts) != 3 {
 		return "", "", "", fmt.Errorf(
 			"cannot parse %q — expected host/owner/repo, e.g. github.com/kepano/obsidian-minimal", ref)
@@ -85,16 +75,16 @@ func Parse(ref string) (host, owner, repo string, err error) {
 
 	host, owner, repo = parts[0], parts[1], parts[2]
 	host = strings.ToLower(host)
-	if verr := ValidateHost(host); verr != nil {
-		return "", "", "", fmt.Errorf("cannot parse %q — %w", ref, verr)
+	if err := ValidateHost(host); err != nil {
+		return "", "", "", fmt.Errorf("cannot parse %q — %w", ref, err)
 	}
 
 	repo = strings.TrimSuffix(repo, ".git")
-	if verr := ValidateAccount(owner); verr != nil {
-		return "", "", "", verr
+	if err := ValidateAccount(owner); err != nil {
+		return "", "", "", err
 	}
-	if verr := ValidateRepo(repo); verr != nil {
-		return "", "", "", verr
+	if err := ValidateRepo(repo); err != nil {
+		return "", "", "", err
 	}
 	return host, owner, repo, nil
 }
