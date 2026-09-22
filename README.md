@@ -8,7 +8,7 @@
   
   ## Install
   
-  Requires Go 1.26+.
+  Requires Go 1.26.5+.
   
   ```bash
   go install github.com/jbonadiman/mirror-to-org@latest
