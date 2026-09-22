@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jbonadiman/mirror-to-org/internal/httperr"
+	"github.com/jbonadiman/mirror-to-org/internal/profile"
 	"github.com/jbonadiman/mirror-to-org/internal/reference"
 )
 
@@ -155,7 +156,12 @@ func UploadAvatar(client, source *http.Client, targetURL, name, avatarURL string
 		return fmt.Errorf("refusing avatar URL host: %w", err)
 	}
 
-	image, status, err := doRequest(source, http.MethodGet, avatarURL, nil, map[string]string{"User-Agent": "mirror-to-org"})
+	// The avatar is fetched from the source, so it follows the same
+	// redirect rule as a profile fetch: a source cannot bounce it onto an
+	// internal address.
+	fetch := *source
+	fetch.CheckRedirect = profile.RefuseUnsafeRedirect
+	image, status, err := doRequest(&fetch, http.MethodGet, avatarURL, nil, map[string]string{"User-Agent": "mirror-to-org"})
 	if err != nil {
 		return err
 	}

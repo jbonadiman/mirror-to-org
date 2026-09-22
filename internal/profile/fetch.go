@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/jbonadiman/mirror-to-org/internal/httperr"
+	"github.com/jbonadiman/mirror-to-org/internal/reference"
 )
 
 const (
@@ -22,7 +24,28 @@ func SourceURL(host, account string) string {
 	return fmt.Sprintf("https://%s/%s", host, account)
 }
 
+// RefuseUnsafeRedirect is the CheckRedirect policy for fetches from a
+// source. The URL that starts a fetch is checked once, but a source can
+// answer with a redirect, so every hop is checked again: a redirect may
+// not leave https or land on a host the reference guard rejects. Without
+// it a source could bounce the fetch onto an internal address.
+func RefuseUnsafeRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to non-https URL: %s", req.URL)
+	}
+	if err := reference.ValidateHost(strings.ToLower(req.URL.Host)); err != nil {
+		return fmt.Errorf("refusing redirect to %s: %w", req.URL, err)
+	}
+	return nil
+}
+
 func doGet(client *http.Client, rawURL string, headers map[string]string) ([]byte, int, error) {
+	guarded := *client
+	guarded.CheckRedirect = RefuseUnsafeRedirect
+
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, 0, err
@@ -30,7 +53,7 @@ func doGet(client *http.Client, rawURL string, headers map[string]string) ([]byt
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := client.Do(req)
+	resp, err := guarded.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

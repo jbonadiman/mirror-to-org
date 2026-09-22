@@ -55,6 +55,22 @@ func TestFetch(t *testing.T) {
 		}
 	})
 
+	t.Run("a redirect onto an internal address is refused", func(t *testing.T) {
+		var urls []string
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			urls = append(urls, r.URL.String())
+			resp := jsonResponse(302, "")
+			resp.Header.Set("Location", "http://127.0.0.1/secret")
+			return resp, nil
+		})}
+		if _, err := Fetch(client, "codeberg.org", "kepano"); err == nil {
+			t.Fatal("expected a redirect error")
+		}
+		if len(urls) != 1 {
+			t.Fatalf("expected the redirect not to be followed, got %v", urls)
+		}
+	})
+
 	t.Run("404 is ErrNotFound", func(t *testing.T) {
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return jsonResponse(404, ""), nil

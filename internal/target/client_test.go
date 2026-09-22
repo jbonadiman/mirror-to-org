@@ -184,6 +184,22 @@ func TestUploadAvatar(t *testing.T) {
 		}
 	})
 
+	t.Run("redirecting avatar url is refused", func(t *testing.T) {
+		var urls []string
+		source := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			urls = append(urls, r.URL.String())
+			resp := textResponse(302, "")
+			resp.Header.Set("Location", "http://127.0.0.1/secret")
+			return resp, nil
+		})}
+		if err := UploadAvatar(&http.Client{}, source, testTarget, "kepano", "https://avatars.test/a.png"); err == nil {
+			t.Fatal("expected an error")
+		}
+		if len(urls) != 1 {
+			t.Fatalf("expected the redirect not to be followed, got %v", urls)
+		}
+	})
+
 	t.Run("downloads and base64-encodes the avatar", func(t *testing.T) {
 		var seenImage string
 		source := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
