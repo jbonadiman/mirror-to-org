@@ -29,9 +29,12 @@ Options:
   --target URL  Target instance base URL (or set $GITEA_TARGET)
 `
 
+// verdict is how a reference ended: mirrored, skipped, or neither.
+type verdict string
+
 const (
-	verdictOK   = "ok"
-	verdictSkip = "skip"
+	verdictOK   verdict = "ok"
+	verdictSkip verdict = "skip"
 )
 
 // maxParallel caps how many references are mirrored at once. A migration is
@@ -48,10 +51,10 @@ const maxParallel = 4
 // ever outgrows the migrations it overlaps.
 type ownerCache struct {
 	mu sync.Mutex
-	m  map[string]string
+	m  map[string]verdict
 }
 
-func newOwnerCache() *ownerCache { return &ownerCache{m: map[string]string{}} }
+func newOwnerCache() *ownerCache { return &ownerCache{m: map[string]verdict{}} }
 
 // mirrorer runs references against one target. It keeps the clients, the
 // target URL and the per-run owner cache together, so the steps below do
@@ -64,25 +67,25 @@ type mirrorer struct {
 	owners *ownerCache
 }
 
-func (m *mirrorer) resolveOwner(host, owner string) (verdict string, created bool, err error) {
+func (m *mirrorer) resolveOwner(host, owner string) (verdict, bool, error) {
 	m.owners.mu.Lock()
 	defer m.owners.mu.Unlock()
 
-	if v, ok := m.owners.m[owner]; ok {
-		return v, false, nil
+	if cached, ok := m.owners.m[owner]; ok {
+		return cached, false, nil
 	}
 
 	action, err := target.Probe(m.client, m.target, owner)
 	if err != nil {
 		return "", false, err
 	}
-	if action != "create" {
-		verdict := verdictOK
-		if action == "skip" {
-			verdict = verdictSkip
-		}
-		m.owners.m[owner] = verdict
-		return verdict, false, nil
+	switch action {
+	case target.ActionSkip:
+		m.owners.m[owner] = verdictSkip
+		return verdictSkip, false, nil
+	case target.ActionUpdate:
+		m.owners.m[owner] = verdictOK
+		return verdictOK, false, nil
 	}
 
 	raw, err := profile.Fetch(m.source, host, owner)
@@ -121,17 +124,17 @@ func (m *mirrorer) resolveOwner(host, owner string) (verdict string, created boo
 	return verdictOK, true, nil
 }
 
-func (m *mirrorer) mirror(ref string) (status, detail string, orgCreated bool, err error) {
+func (m *mirrorer) mirror(ref string) (status verdict, detail string, orgCreated bool, err error) {
 	host, owner, repo, err := reference.Parse(ref)
 	if err != nil {
 		return "", "", false, err
 	}
 
-	verdict, orgCreated, err := m.resolveOwner(host, owner)
+	v, orgCreated, err := m.resolveOwner(host, owner)
 	if err != nil {
 		return "", "", orgCreated, err
 	}
-	if verdict == verdictSkip {
+	if v == verdictSkip {
 		return verdictSkip, fmt.Sprintf("'%s' is already a user account on the target", owner), orgCreated, nil
 	}
 
@@ -182,7 +185,7 @@ func parseArgs(args []string) (targetURL string, references []string, err error)
 // caller can print every reference in the order it was given.
 type mirrorResult struct {
 	out        bytes.Buffer
-	status     string
+	status     verdict
 	detail     string
 	orgCreated bool
 	err        error

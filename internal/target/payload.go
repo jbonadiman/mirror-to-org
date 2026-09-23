@@ -72,14 +72,20 @@ func BuildCreatePayload(p profile.Profile, sourceURL string) OrgCreatePayload {
 	}
 }
 
-// Gitea has no org/user discriminator, so a taken name shows as
-// orgs-404 + users-200.
+// Actions Probe decides between. Gitea has no org/user discriminator,
+// so a taken name shows as orgs-404 + users-200.
+const (
+	ActionCreate = "create"
+	ActionUpdate = "update"
+	ActionSkip   = "skip"
+)
+
 func DecideAction(orgStatus, userStatus int) string {
 	if orgStatus == 200 {
-		return "update"
+		return ActionUpdate
 	}
 	if userStatus == 200 {
-		return "skip"
+		return ActionSkip
 	}
-	return "create"
+	return ActionCreate
 }
