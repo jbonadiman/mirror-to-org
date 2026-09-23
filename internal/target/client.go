@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,8 +32,25 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
+// refuseForeignRedirect keeps the target token on the target host. Go's
+// default client drops Authorization when a redirect changes host, but the
+// authTransport sets it on every hop, so a redirect would otherwise hand the
+// token to whatever host the target names. Refuse loudly instead.
+func refuseForeignRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if req.URL.Scheme != "https" || req.URL.Host != via[0].URL.Host {
+		return fmt.Errorf("refusing redirect to %s", req.URL)
+	}
+	return nil
+}
+
 func NewClient(token string) *http.Client {
-	return &http.Client{Transport: &authTransport{token: token, base: http.DefaultTransport}}
+	return &http.Client{
+		Transport:     &authTransport{token: token, base: http.DefaultTransport},
+		CheckRedirect: refuseForeignRedirect,
+	}
 }
 
 func doRequest(client *http.Client, method, url string, body []byte, headers map[string]string) ([]byte, int, error) {

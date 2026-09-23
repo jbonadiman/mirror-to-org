@@ -25,6 +25,24 @@ const testTarget = "https://target.test"
 
 var migrationBody = MigrationPayload{RepoOwner: "kepano", RepoName: "minimal", CloneAddr: "x"}
 
+func TestNewClientRefusesForeignRedirect(t *testing.T) {
+	var seen []string
+	client := NewClient("SECRET")
+	client.Transport = &authTransport{token: "SECRET", base: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.URL.String()+" auth="+r.Header.Get("Authorization"))
+		resp := textResponse(302, "")
+		resp.Header.Set("Location", "https://evil.test/steal")
+		return resp, nil
+	})}
+
+	if _, _, err := doRequest(client, http.MethodGet, testTarget+"/api/v1/orgs/x", nil, nil); err == nil {
+		t.Fatal("expected the redirect to be refused")
+	}
+	if len(seen) != 1 {
+		t.Fatalf("expected the redirect not to be followed, got %v", seen)
+	}
+}
+
 func TestRepoExists(t *testing.T) {
 	t.Run("absent repository probes false", func(t *testing.T) {
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return textResponse(404, ""), nil })}
