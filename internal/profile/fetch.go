@@ -70,17 +70,15 @@ func Fetch(source *http.Client, host, account string) ([]byte, error) {
 		return fetchGitlab(source, host, account)
 	}
 
-	var apiURL string
 	headers := map[string]string{
 		"Accept":     "application/json",
 		"User-Agent": userAgent,
 	}
+	apiURL := fmt.Sprintf("https://%s/api/v1/users/%s", host, account)
 	if host == GithubHost {
-		apiURL = fmt.Sprintf("%s/users/%s", githubAPI, account)
 		headers["Accept"] = "application/vnd.github+json"
 		headers["X-GitHub-Api-Version"] = "2022-11-28"
-	} else {
-		apiURL = fmt.Sprintf("https://%s/api/v1/users/%s", host, account)
+		apiURL = fmt.Sprintf("%s/users/%s", githubAPI, account)
 	}
 
 	body, status, err := doGet(source, apiURL, headers)
